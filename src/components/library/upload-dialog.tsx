@@ -1,0 +1,86 @@
+'use client'
+
+import { useState, useCallback } from 'react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+
+interface UploadDialogProps {
+  onBookImported: () => void
+}
+
+export function UploadDialog({ onBookImported }: UploadDialogProps) {
+  const [open, setOpen] = useState(false)
+  const [file, setFile] = useState<File | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [hasOutline, setHasOutline] = useState<boolean | null>(null)
+  const [step, setStep] = useState<'upload' | 'structure'>('upload')
+
+  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setFile(f)
+    const { PDFService } = await import('@/lib/services/pdf-service')
+    const pdfService = new PDFService()
+    const outline = await pdfService.extractOutline(f)
+    setHasOutline(outline !== null && outline.length > 0)
+    setStep('structure')
+  }, [])
+
+  const handleImport = useCallback(async (useNativeTOC: boolean) => {
+    if (!file) return
+    setLoading(true)
+    const { SettingsService } = await import('@/lib/services/settings-service')
+    const { BookProcessingService } = await import('@/lib/services/book-processing-service')
+    const settings = new SettingsService()
+    const apiKey = settings.getApiKey()
+    const service = new BookProcessingService(apiKey ?? undefined)
+    await service.importBook(file, { useNativeTOC })
+    setLoading(false)
+    setOpen(false)
+    setStep('upload')
+    setFile(null)
+    onBookImported()
+  }, [file, onBookImported])
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button>Upload PDF</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Import a Book</DialogTitle>
+        </DialogHeader>
+        {step === 'upload' && (
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="pdf-file">Select PDF file</Label>
+              <Input id="pdf-file" type="file" accept=".pdf" onChange={handleFileChange} />
+            </div>
+          </div>
+        )}
+        {step === 'structure' && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {hasOutline
+                ? 'We detected a table of contents in this PDF. Would you like to use it?'
+                : 'No table of contents detected. We\'ll use AI to split the book into sections.'}
+            </p>
+            <div className="flex gap-2">
+              {hasOutline && (
+                <Button onClick={() => handleImport(true)} disabled={loading}>
+                  {loading ? 'Importing...' : 'Use Native TOC'}
+                </Button>
+              )}
+              <Button variant={hasOutline ? 'outline' : 'default'} onClick={() => handleImport(false)} disabled={loading}>
+                {loading ? 'Importing...' : 'Use AI Splitting'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
