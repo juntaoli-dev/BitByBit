@@ -53,7 +53,7 @@ export class PDFService {
       canvas.width = viewport.width
       canvas.height = viewport.height
       const ctx = canvas.getContext('2d')!
-      await page.render({ canvasContext: ctx, viewport }).promise
+      await page.render({ canvasContext: ctx, viewport, canvas } as unknown as import('pdfjs-dist/types/src/display/api').RenderParameters).promise
       return canvas.toDataURL('image/png')
     } finally {
       doc.destroy()
