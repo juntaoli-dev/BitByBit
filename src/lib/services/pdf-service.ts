@@ -1,5 +1,9 @@
 import * as pdfjs from 'pdfjs-dist'
 
+if (typeof window !== 'undefined') {
+  pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
+}
+
 export interface PDFMetadata {
   title: string
   author: string
@@ -37,7 +41,9 @@ export class PDFService {
       if (!outline || outline.length === 0) {
         return null
       }
-      return outline.map((item: any) => this.mapOutlineItem(item))
+      // Resolve all page numbers from destinations
+      const items = await this.mapOutlineItems(outline, doc)
+      return items
     } finally {
       doc.destroy()
     }
@@ -72,11 +78,38 @@ export class PDFService {
     }
   }
 
-  private mapOutlineItem(item: any): PDFOutlineItem {
-    return {
-      title: item.title,
-      pageNumber: null,
-      children: (item.items || []).map((child: any) => this.mapOutlineItem(child)),
+  private async mapOutlineItems(
+    items: any[],
+    doc: pdfjs.PDFDocumentProxy,
+  ): Promise<PDFOutlineItem[]> {
+    const result: PDFOutlineItem[] = []
+    for (const item of items) {
+      const pageNumber = await this.resolveDestPage(item.dest, doc)
+      const children = item.items?.length
+        ? await this.mapOutlineItems(item.items, doc)
+        : []
+      result.push({ title: item.title, pageNumber, children })
+    }
+    return result
+  }
+
+  private async resolveDestPage(
+    dest: any,
+    doc: pdfjs.PDFDocumentProxy,
+  ): Promise<number | null> {
+    try {
+      // dest can be a string (named dest) or an array (explicit dest)
+      let resolved = dest
+      if (typeof dest === 'string') {
+        resolved = await doc.getDestination(dest)
+      }
+      if (!resolved || !Array.isArray(resolved)) return null
+      // resolved[0] is a page ref object
+      const pageRef = resolved[0]
+      const pageIndex = await doc.getPageIndex(pageRef)
+      return pageIndex + 1 // PDF.js pages are 0-indexed, we use 1-indexed
+    } catch {
+      return null
     }
   }
 }

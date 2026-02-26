@@ -56,18 +56,43 @@ export default function SettingsPage() {
         </div>
 
         <div className="space-y-2">
-          <Label>Auto-read threshold: {settings.autoReadThresholdSeconds}s</Label>
-          <Slider
-            value={[settings.autoReadThresholdSeconds]}
-            onValueChange={([v]) => setSettings({ ...settings, autoReadThresholdSeconds: v })}
-            min={1}
-            max={30}
-            step={1}
-          />
+          <Label>Reading tracking mode</Label>
+          <div className="flex gap-2">
+            <Button
+              variant={settings.trackingMode === 'timer' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setSettings({ ...settings, trackingMode: 'timer' })}
+            >
+              Timer
+            </Button>
+            <Button
+              variant={settings.trackingMode === 'endofpage' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setSettings({ ...settings, trackingMode: 'endofpage' })}
+            >
+              End of Page
+            </Button>
+          </div>
           <p className="text-xs text-muted-foreground">
-            Sections are marked as read after viewing for this many seconds.
+            Timer: marks as read after a set time. End of Page: marks as read when you scroll to the bottom.
           </p>
         </div>
+
+        {settings.trackingMode === 'timer' && (
+          <div className="space-y-2">
+            <Label>Auto-read threshold: {settings.autoReadThresholdSeconds}s</Label>
+            <Slider
+              value={[settings.autoReadThresholdSeconds]}
+              onValueChange={([v]) => setSettings({ ...settings, autoReadThresholdSeconds: v })}
+              min={1}
+              max={30}
+              step={1}
+            />
+            <p className="text-xs text-muted-foreground">
+              Sections are marked as read after viewing for this many seconds.
+            </p>
+          </div>
+        )}
 
         <div className="space-y-2">
           <Label>Default view mode</Label>
@@ -84,6 +109,29 @@ export default function SettingsPage() {
               </Button>
             ))}
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Default reading mode</Label>
+          <div className="flex gap-2">
+            <Button
+              variant={settings.readingMode === 'scroll' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setSettings({ ...settings, readingMode: 'scroll' })}
+            >
+              Scroll
+            </Button>
+            <Button
+              variant={settings.readingMode === 'flip' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setSettings({ ...settings, readingMode: 'flip' })}
+            >
+              Flip
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Scroll: all pages in a continuous scroll. Flip: one page at a time with keyboard navigation (arrow keys / spacebar).
+          </p>
         </div>
 
         <Button onClick={handleSave}>

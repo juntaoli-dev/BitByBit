@@ -8,6 +8,7 @@ const PAGES_PER_BATCH = 10
 
 interface ImportOptions {
   useNativeTOC: boolean
+  onProgress?: (message: string, percent: number) => void
 }
 
 export class BookProcessingService {
@@ -20,7 +21,9 @@ export class BookProcessingService {
   }
 
   async importBook(blob: Blob, options: ImportOptions): Promise<string> {
+    options.onProgress?.('Reading PDF metadata...', 5)
     const metadata = await this.pdfService.extractMetadata(blob)
+    options.onProgress?.('Detecting table of contents...', 10)
     const outline = await this.pdfService.extractOutline(blob)
 
     const book: Book = {
@@ -38,11 +41,13 @@ export class BookProcessingService {
     await db.books.add(book)
 
     if (options.useNativeTOC && outline) {
-      await this.buildChaptersFromOutline(book.id, outline, metadata.totalPages)
+      await this.buildStructureFromOutline(book.id, outline, metadata.totalPages, blob, options.onProgress)
+      await db.books.update(book.id, { processingStatus: 'complete' })
     } else {
       await this.buildDefaultChapters(book.id, metadata.totalPages)
     }
 
+    options.onProgress?.('Done!', 100)
     return book.id
   }
 
@@ -83,18 +88,30 @@ export class BookProcessingService {
     })
 
     const baseOrder = existingSections.length
-    const sections: Section[] = result.sections.map((s, i) => ({
-      id: uuid(),
-      chapterId,
-      bookId,
-      title: s.title,
-      order: baseOrder + i + 1,
-      startPage: s.startPage,
-      endPage: s.endPage,
-      extractedText: s.summary,
-      isRead: false,
-      readAt: null,
-    }))
+    const sections: Section[] = result.sections.map((s, i) => {
+      // Stitch together the actual extracted text for this section's page range
+      const sectionTexts: string[] = []
+      for (let p = s.startPage; p <= s.endPage; p++) {
+        const idx = p - chapter.startPage
+        if (idx >= 0 && idx < pageTexts.length && pageTexts[idx].trim()) {
+          sectionTexts.push(pageTexts[idx])
+        }
+      }
+      return {
+        id: uuid(),
+        chapterId,
+        bookId,
+        title: s.title,
+        order: baseOrder + i + 1,
+        startPage: s.startPage,
+        endPage: s.endPage,
+        extractedText: sectionTexts.join('\n\n') || null,
+        isRead: false,
+        readAt: null,
+        lastPageViewed: null,
+        scrollProgress: null,
+      }
+    })
 
     await db.sections.bulkAdd(sections)
   }
@@ -127,26 +144,171 @@ export class BookProcessingService {
     await db.books.update(bookId, { processingStatus: 'complete' })
   }
 
-  private async buildChaptersFromOutline(
+  /**
+   * Walk the outline tree and dynamically build chapters + sections
+   * based on the book's actual structure.
+   *
+   * Strategy:
+   * - Leaf nodes (no children) → become sections
+   * - Nodes whose children are all leaves → become chapters, children become sections
+   * - Nodes with deeper nesting → recurse; they're grouping levels (e.g. "Part 1")
+   *   that get flattened into chapter titles like "Part 1 > Chapter 1"
+   */
+  private async buildStructureFromOutline(
     bookId: string,
     outline: { title: string; pageNumber: number | null; children: any[] }[],
     totalPages: number,
+    blob: Blob,
+    onProgress?: (message: string, percent: number) => void,
   ): Promise<void> {
-    const chapters: Chapter[] = outline.map((item, i) => {
-      const startPage = item.pageNumber ?? (i === 0 ? 1 : Math.floor((i / outline.length) * totalPages) + 1)
-      const endPage = i < outline.length - 1
-        ? (outline[i + 1].pageNumber ?? Math.floor(((i + 1) / outline.length) * totalPages)) - 1
-        : totalPages
-      return {
-        id: uuid(),
-        bookId,
-        title: item.title,
-        order: i + 1,
-        startPage,
-        endPage: Math.max(startPage, endPage),
+    // First, flatten the entire outline into an ordered list to compute page ranges
+    const allItems = this.flattenOutline(outline)
+    const pageMap = new Map<string, number>()
+    allItems.forEach((item, i) => {
+      if (item.pageNumber != null) {
+        pageMap.set(item.title + '_' + i, item.pageNumber)
       }
     })
-    await db.chapters.bulkAdd(chapters)
+
+    // Collect chapter/section pairs by walking the tree
+    const result: { chapterTitle: string; sections: { title: string; pageNumber: number | null }[] }[] = []
+    this.walkOutlineTree(outline, '', result)
+
+    // Now compute page ranges and create DB records
+    // Build a flat ordered list of ALL leaf titles with page numbers for range computation
+    const allLeaves: { title: string; pageNumber: number | null; chapterIdx: number; sectionIdx: number }[] = []
+    result.forEach((ch, ci) => {
+      ch.sections.forEach((s, si) => {
+        allLeaves.push({ title: s.title, pageNumber: s.pageNumber, chapterIdx: ci, sectionIdx: si })
+      })
+    })
+
+    let chapterOrder = 0
+    let sectionOrder = 0
+
+    onProgress?.('Building structure...', 15)
+
+    for (let ci = 0; ci < result.length; ci++) {
+      const ch = result[ci]
+      const percent = 15 + Math.round((ci / result.length) * 80)
+      onProgress?.(`Extracting text: ${ch.chapterTitle}`, percent)
+      // Compute chapter page range from its sections
+      const chapterSections = allLeaves.filter(l => l.chapterIdx === ci)
+      const firstPage = chapterSections[0]?.pageNumber ?? 1
+      // Find the next section AFTER this chapter to determine endPage
+      const lastSectionGlobalIdx = allLeaves.findIndex(
+        l => l.chapterIdx === ci && l.sectionIdx === ch.sections.length - 1
+      )
+      const nextLeaf = allLeaves[lastSectionGlobalIdx + 1]
+      const endPage = nextLeaf?.pageNumber != null
+        ? nextLeaf.pageNumber - 1
+        : totalPages
+
+      const chapterId = uuid()
+      const chapter: Chapter = {
+        id: chapterId,
+        bookId,
+        title: ch.chapterTitle,
+        order: ++chapterOrder,
+        startPage: firstPage,
+        endPage: Math.max(firstPage, endPage),
+      }
+      await db.chapters.add(chapter)
+
+      // Create sections with extracted text
+      for (let si = 0; si < ch.sections.length; si++) {
+        const sec = ch.sections[si]
+        const startPage = sec.pageNumber ?? firstPage
+        // Next section's page determines this section's end
+        const nextSec = ch.sections[si + 1]
+        let secEndPage: number
+        if (nextSec?.pageNumber != null) {
+          secEndPage = nextSec.pageNumber - 1
+        } else if (si === ch.sections.length - 1) {
+          // Last section in chapter — find next chapter's start
+          const nextChSections = result[ci + 1]?.sections
+          if (nextChSections?.[0]?.pageNumber != null) {
+            secEndPage = nextChSections[0].pageNumber - 1
+          } else {
+            secEndPage = endPage
+          }
+        } else {
+          secEndPage = endPage
+        }
+        secEndPage = Math.max(startPage, secEndPage)
+
+        // Extract actual text for this section's pages
+        const pageTexts: string[] = []
+        for (let p = startPage; p <= secEndPage; p++) {
+          const text = await this.pdfService.extractPageText(blob, p)
+          if (text.trim()) pageTexts.push(text)
+        }
+
+        const section: Section = {
+          id: uuid(),
+          chapterId,
+          bookId,
+          title: sec.title,
+          order: ++sectionOrder,
+          startPage,
+          endPage: secEndPage,
+          extractedText: pageTexts.join('\n\n') || null,
+          isRead: false,
+          readAt: null,
+          lastPageViewed: null,
+          scrollProgress: null,
+        }
+        await db.sections.add(section)
+      }
+    }
+  }
+
+  private walkOutlineTree(
+    items: { title: string; pageNumber: number | null; children: any[] }[],
+    parentPrefix: string,
+    result: { chapterTitle: string; sections: { title: string; pageNumber: number | null }[] }[],
+  ): void {
+    for (const item of items) {
+      const children = item.children || []
+      if (children.length === 0) {
+        // Leaf node with no parent chapter yet → standalone chapter with one section
+        result.push({
+          chapterTitle: item.title,
+          sections: [{ title: item.title, pageNumber: item.pageNumber }],
+        })
+      } else if (children.every((c: any) => !c.children || c.children.length === 0)) {
+        // All children are leaves → this is a chapter, children are sections
+        const title = parentPrefix ? `${parentPrefix} > ${item.title}` : item.title
+        result.push({
+          chapterTitle: title,
+          sections: children.map((c: any) => ({ title: c.title, pageNumber: c.pageNumber })),
+        })
+      } else {
+        // Has nested children → grouping level, recurse
+        const prefix = parentPrefix ? `${parentPrefix} > ${item.title}` : item.title
+        // But first, collect any direct leaf children as a standalone chapter
+        const directLeaves = children.filter((c: any) => !c.children || c.children.length === 0)
+        const nestedChildren = children.filter((c: any) => c.children && c.children.length > 0)
+        if (directLeaves.length > 0) {
+          result.push({
+            chapterTitle: prefix,
+            sections: directLeaves.map((c: any) => ({ title: c.title, pageNumber: c.pageNumber })),
+          })
+        }
+        this.walkOutlineTree(nestedChildren, prefix, result)
+      }
+    }
+  }
+
+  private flattenOutline(items: any[]): { title: string; pageNumber: number | null }[] {
+    const result: { title: string; pageNumber: number | null }[] = []
+    for (const item of items) {
+      result.push({ title: item.title, pageNumber: item.pageNumber })
+      if (item.children?.length) {
+        result.push(...this.flattenOutline(item.children))
+      }
+    }
+    return result
   }
 
   private async buildDefaultChapters(bookId: string, totalPages: number): Promise<void> {

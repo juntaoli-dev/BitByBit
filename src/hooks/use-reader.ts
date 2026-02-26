@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { Book, Chapter, Section } from '@/lib/db/models'
 
 export type ViewMode = 'pdf' | 'text' | 'side-by-side'
@@ -11,19 +11,28 @@ export function useReader(bookId: string, sectionId: string) {
   const [chapter, setChapter] = useState<Chapter | null>(null)
   const [chapterSections, setChapterSections] = useState<Section[]>([])
   const [viewMode, setViewMode] = useState<ViewMode>('side-by-side')
+  const [readingMode, setReadingMode] = useState<'scroll' | 'flip'>('scroll')
   const [loading, setLoading] = useState(true)
+  const initialLoadDone = useRef(false)
 
+  // Full load — only on initial mount or section change
   const loadData = useCallback(async () => {
     setLoading(true)
     const { BookRepository, SectionRepository } = await import('@/lib/repositories')
     const { db } = await import('@/lib/db/database')
-    const { SettingsService } = await import('@/lib/services/settings-service')
 
     const bookRepo = new BookRepository()
     const sectionRepo = new SectionRepository()
-    const settingsService = new SettingsService()
 
-    setViewMode(settingsService.getSettings().defaultViewMode)
+    // Only set viewMode from settings on first load
+    if (!initialLoadDone.current) {
+      const { SettingsService } = await import('@/lib/services/settings-service')
+      const settingsService = new SettingsService()
+      const s = settingsService.getSettings()
+      setViewMode(s.defaultViewMode)
+      setReadingMode(s.readingMode)
+      initialLoadDone.current = true
+    }
 
     const b = await bookRepo.getById(bookId)
     const s = await db.sections.get(sectionId)
@@ -41,6 +50,22 @@ export function useReader(bookId: string, sectionId: string) {
 
   useEffect(() => { loadData() }, [loadData])
 
+  // Lightweight refresh — just update section read status + sidebar dots
+  const refreshReadStatus = useCallback(async () => {
+    const { SectionRepository } = await import('@/lib/repositories')
+    const { db } = await import('@/lib/db/database')
+    const sectionRepo = new SectionRepository()
+
+    const s = await db.sections.get(sectionId)
+    if (s) setSection(s)
+
+    // Update sidebar dots
+    if (section?.chapterId) {
+      const siblings = await sectionRepo.getByChapter(section.chapterId)
+      setChapterSections(siblings)
+    }
+  }, [sectionId, section?.chapterId])
+
   const currentIndex = chapterSections.findIndex(s => s.id === sectionId)
   const prevSection = currentIndex > 0 ? chapterSections[currentIndex - 1] : null
   const nextSection = currentIndex < chapterSections.length - 1 ? chapterSections[currentIndex + 1] : null
@@ -48,7 +73,8 @@ export function useReader(bookId: string, sectionId: string) {
   return {
     book, section, chapter, chapterSections,
     viewMode, setViewMode,
+    readingMode, setReadingMode,
     prevSection, nextSection,
-    loading, refresh: loadData,
+    loading, refresh: loadData, refreshReadStatus,
   }
 }

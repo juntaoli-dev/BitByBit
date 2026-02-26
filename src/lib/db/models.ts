@@ -31,4 +31,6 @@ export interface Section {
   extractedText: string | null
   isRead: boolean
   readAt: number | null
+  lastPageViewed: number | null  // last page user was on within this section
+  scrollProgress: number | null  // 0-100 scroll percentage in scroll mode
 }

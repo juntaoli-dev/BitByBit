@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useCallback } from 'react'
+import { use, useCallback, useRef, useState } from 'react'
 import { useReader } from '@/hooks/use-reader'
 import { useAutoTrack } from '@/hooks/use-auto-track'
 import { PDFViewer } from '@/components/reader/pdf-viewer'
@@ -14,13 +14,28 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string; s
   const {
     book, section, chapterSections,
     viewMode, setViewMode,
+    readingMode, setReadingMode,
     prevSection, nextSection,
-    loading, refresh,
+    loading, refreshReadStatus,
   } = useReader(bookId, sectionId)
 
-  const handleMarkedRead = useCallback(() => { refresh() }, [refresh])
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [sectionProgress, setSectionProgress] = useState(0)
 
-  useAutoTrack(sectionId, section?.isRead ?? false, handleMarkedRead)
+  const handleMarkedRead = useCallback(() => { refreshReadStatus() }, [refreshReadStatus])
+
+  useAutoTrack(sectionId, section?.isRead ?? false, handleMarkedRead, contentRef)
+
+  const handlePageProgress = useCallback((currentPage: number, totalPages: number, scrollPercent: number) => {
+    setSectionProgress(scrollPercent)
+    // Save progress to DB
+    import('@/lib/db/database').then(({ db }) => {
+      db.sections.update(sectionId, {
+        lastPageViewed: currentPage,
+        scrollProgress: scrollPercent,
+      })
+    })
+  }, [sectionId])
 
   if (loading || !book || !section) {
     return <div className="flex justify-center py-20 text-muted-foreground">Loading...</div>
@@ -35,9 +50,12 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string; s
         sectionId={sectionId}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        readingMode={readingMode}
+        onReadingModeChange={setReadingMode}
         prevSection={prevSection}
         nextSection={nextSection}
-        onReadToggle={refresh}
+        onReadToggle={refreshReadStatus}
+        sectionProgress={sectionProgress}
       />
       <div className="flex flex-1 overflow-hidden">
         <SectionSidebar
@@ -45,22 +63,30 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string; s
           sections={chapterSections}
           currentSectionId={sectionId}
         />
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-hidden flex flex-col" ref={contentRef}>
           {viewMode === 'pdf' && (
-            <div className="p-4">
-              <PDFViewer pdfBlob={book.pdfBlob} pageNumber={section.startPage} />
-            </div>
+            <PDFViewer
+              pdfBlob={book.pdfBlob}
+              startPage={section.startPage}
+              endPage={section.endPage}
+              readingMode={readingMode}
+              onPageProgress={handlePageProgress}
+            />
           )}
           {viewMode === 'text' && (
-            <TextViewer text={section.extractedText} sectionTitle={section.title} />
+            <div className="flex-1 overflow-auto">
+              <TextViewer text={section.extractedText} sectionTitle={section.title} />
+            </div>
           )}
           {viewMode === 'side-by-side' && (
             <SideBySideViewer
               pdfBlob={book.pdfBlob}
-              pageNumber={section.startPage}
+              startPage={section.startPage}
+              endPage={section.endPage}
               text={section.extractedText}
               sectionTitle={section.title}
-              highlightRegion={null}
+              readingMode={readingMode}
+              onPageProgress={handlePageProgress}
             />
           )}
         </div>

@@ -33,7 +33,7 @@ export class BookRepository {
   }
 
   async listAll(): Promise<Book[]> {
-    return db.books.orderBy('lastReadAt').reverse().toArray()
+    return db.books.orderBy('createdAt').reverse().toArray()
   }
 
   async updateLastRead(id: string): Promise<void> {

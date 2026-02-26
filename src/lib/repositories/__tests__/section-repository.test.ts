@@ -15,7 +15,7 @@ describe('SectionRepository', () => {
     const section: Section = {
       id: 's1', chapterId: 'ch1', bookId: 'b1', title: 'S1',
       order: 1, startPage: 1, endPage: 5, extractedText: null,
-      isRead: false, readAt: null,
+      isRead: false, readAt: null, lastPageViewed: null, scrollProgress: null,
     }
     await db.sections.add(section)
     await repo.markAsRead('s1')
@@ -26,7 +26,7 @@ describe('SectionRepository', () => {
 
   it('should calculate progress for a book', async () => {
     const sections: Section[] = [
-      { id: 's1', chapterId: 'ch1', bookId: 'b1', title: 'S1', order: 1, startPage: 1, endPage: 5, extractedText: null, isRead: true, readAt: Date.now() },
+      { id: 's1', chapterId: 'ch1', bookId: 'b1', title: 'S1', order: 1, startPage: 1, endPage: 5, extractedText: null, isRead: true, readAt: Date.now(), lastPageViewed: null, scrollProgress: null },
       { id: 's2', chapterId: 'ch1', bookId: 'b1', title: 'S2', order: 2, startPage: 5, endPage: 10, extractedText: null, isRead: false, readAt: null },
     ]
     await db.sections.bulkAdd(sections)

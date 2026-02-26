@@ -4,12 +4,16 @@ export interface AppSettings {
   anthropicApiKey: string | null
   autoReadThresholdSeconds: number
   defaultViewMode: 'pdf' | 'text' | 'side-by-side'
+  trackingMode: 'timer' | 'endofpage'
+  readingMode: 'scroll' | 'flip'
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   anthropicApiKey: null,
   autoReadThresholdSeconds: 5,
   defaultViewMode: 'side-by-side',
+  trackingMode: 'timer',
+  readingMode: 'scroll',
 }
 
 export class SettingsService {

@@ -1,54 +1,208 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
 
 interface PDFViewerProps {
   pdfBlob: Blob
-  pageNumber: number
-  highlightRegion?: { top: number; height: number } | null
+  startPage: number
+  endPage: number
+  readingMode: 'scroll' | 'flip'
+  onPageProgress?: (currentPage: number, totalPages: number, scrollPercent: number) => void
 }
 
-export function PDFViewer({ pdfBlob, pageNumber, highlightRegion }: PDFViewerProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+export function PDFViewer({ pdfBlob, startPage, endPage, readingMode, onPageProgress }: PDFViewerProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
+  const [currentFlipPage, setCurrentFlipPage] = useState(startPage)
+  const totalPages = endPage - startPage + 1
 
+  // Reset flip page when section changes
   useEffect(() => {
+    setCurrentFlipPage(startPage)
+  }, [startPage])
+
+  // Report progress for flip mode
+  useEffect(() => {
+    if (readingMode === 'flip') {
+      const pageIndex = currentFlipPage - startPage + 1
+      const percent = Math.round((pageIndex / totalPages) * 100)
+      onPageProgress?.(currentFlipPage, totalPages, percent)
+    }
+  }, [currentFlipPage, readingMode, startPage, totalPages, onPageProgress])
+
+  // Scroll mode: render all pages, scale to full width
+  useEffect(() => {
+    if (readingMode !== 'scroll') return
     let cancelled = false
+
     const render = async () => {
       try {
         const pdfjs = await import('pdfjs-dist')
-        pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`
+        pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
+
+        const container = containerRef.current
+        if (!container || cancelled) return
+        container.innerHTML = ''
+
+        const containerWidth = container.clientWidth
 
         const arrayBuffer = await pdfBlob.arrayBuffer()
         const doc = await pdfjs.getDocument({ data: arrayBuffer }).promise
-        const page = await doc.getPage(pageNumber)
-        const viewport = page.getViewport({ scale: 1.5 })
-        const canvas = canvasRef.current
-        if (!canvas || cancelled) { doc.destroy(); return }
-        canvas.width = viewport.width
-        canvas.height = viewport.height
-        const ctx = canvas.getContext('2d')!
-        await page.render({ canvasContext: ctx, viewport, canvas } as any).promise
+
+        for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+          if (cancelled) { doc.destroy(); return }
+          const page = await doc.getPage(pageNum)
+          // Scale to fill container width
+          const unscaledViewport = page.getViewport({ scale: 1 })
+          const scale = containerWidth / unscaledViewport.width
+          const viewport = page.getViewport({ scale })
+
+          const canvas = document.createElement('canvas')
+          canvas.width = viewport.width
+          canvas.height = viewport.height
+          canvas.style.width = '100%'
+          canvas.style.height = 'auto'
+          canvas.style.display = 'block'
+          canvas.dataset.pageNum = String(pageNum)
+
+          const ctx = canvas.getContext('2d')!
+          await page.render({ canvasContext: ctx, viewport, canvas } as any).promise
+          if (!cancelled) container.appendChild(canvas)
+        }
         doc.destroy()
-      } catch (err) {
-        if (!cancelled) setError('Failed to render PDF page')
+      } catch {
+        if (!cancelled) setError('Failed to render PDF')
       }
     }
     render()
     return () => { cancelled = true }
-  }, [pdfBlob, pageNumber])
+  }, [pdfBlob, startPage, endPage, readingMode])
+
+  // Scroll mode: track scroll progress
+  useEffect(() => {
+    if (readingMode !== 'scroll') return
+    const container = containerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container
+      const percent = scrollHeight <= clientHeight ? 100 : Math.round((scrollTop / (scrollHeight - clientHeight)) * 100)
+
+      // Figure out which page is in view
+      const canvases = container.querySelectorAll('canvas[data-page-num]')
+      let visiblePage = startPage
+      for (const canvas of canvases) {
+        const rect = canvas.getBoundingClientRect()
+        const containerRect = container.getBoundingClientRect()
+        if (rect.top < containerRect.bottom && rect.bottom > containerRect.top) {
+          visiblePage = Number(canvas.getAttribute('data-page-num'))
+          break
+        }
+      }
+      onPageProgress?.(visiblePage, totalPages, percent)
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    // Check once after render
+    const timer = setTimeout(handleScroll, 500)
+    return () => {
+      container.removeEventListener('scroll', handleScroll)
+      clearTimeout(timer)
+    }
+  }, [readingMode, startPage, totalPages, onPageProgress])
+
+  // Flip mode: render single page, scale to fill
+  useEffect(() => {
+    if (readingMode !== 'flip') return
+    let cancelled = false
+
+    const render = async () => {
+      try {
+        const pdfjs = await import('pdfjs-dist')
+        pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
+
+        const container = containerRef.current
+        if (!container || cancelled) return
+        container.innerHTML = ''
+
+        const containerWidth = container.clientWidth
+
+        const arrayBuffer = await pdfBlob.arrayBuffer()
+        const doc = await pdfjs.getDocument({ data: arrayBuffer }).promise
+        const page = await doc.getPage(currentFlipPage)
+        const unscaledViewport = page.getViewport({ scale: 1 })
+        const scale = containerWidth / unscaledViewport.width
+        const viewport = page.getViewport({ scale })
+
+        const canvas = document.createElement('canvas')
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        canvas.style.width = '100%'
+        canvas.style.height = 'auto'
+        canvas.style.display = 'block'
+
+        const ctx = canvas.getContext('2d')!
+        await page.render({ canvasContext: ctx, viewport, canvas } as any).promise
+        if (!cancelled) container.appendChild(canvas)
+        doc.destroy()
+      } catch {
+        if (!cancelled) setError('Failed to render PDF')
+      }
+    }
+    render()
+    return () => { cancelled = true }
+  }, [pdfBlob, currentFlipPage, readingMode])
+
+  // Keyboard navigation for flip mode
+  const goNext = useCallback(() => {
+    if (currentFlipPage < endPage) setCurrentFlipPage(p => p + 1)
+  }, [currentFlipPage, endPage])
+
+  const goPrev = useCallback(() => {
+    if (currentFlipPage > startPage) setCurrentFlipPage(p => p - 1)
+  }, [currentFlipPage, startPage])
+
+  useEffect(() => {
+    if (readingMode !== 'flip') return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') {
+        e.preventDefault()
+        goNext()
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        goPrev()
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [readingMode, goNext, goPrev])
 
   if (error) return <div className="text-red-500 p-4">{error}</div>
 
   return (
-    <div className="relative inline-block">
-      <canvas ref={canvasRef} className="max-w-full h-auto" />
-      {highlightRegion && (
-        <div
-          className="absolute left-0 right-0 border-2 border-blue-500 bg-blue-500/10 pointer-events-none"
-          style={{ top: `${highlightRegion.top}%`, height: `${highlightRegion.height}%` }}
-        />
+    <div className="flex flex-col h-full">
+      {readingMode === 'flip' && (
+        <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
+          <Button variant="outline" size="sm" onClick={goPrev} disabled={currentFlipPage <= startPage}>
+            ← Prev Page
+          </Button>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">
+              Page {currentFlipPage - startPage + 1} of {totalPages} (p.{currentFlipPage})
+            </span>
+            <Progress value={(currentFlipPage - startPage + 1) / totalPages * 100} className="w-24 h-2" />
+          </div>
+          <Button variant="outline" size="sm" onClick={goNext} disabled={currentFlipPage >= endPage}>
+            Next Page →
+          </Button>
+        </div>
       )}
+      <div
+        ref={containerRef}
+        className={readingMode === 'scroll' ? 'flex-1 overflow-auto' : 'flex-1 overflow-hidden'}
+      />
     </div>
   )
 }

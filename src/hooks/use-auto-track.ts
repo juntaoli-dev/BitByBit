@@ -1,30 +1,62 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 
-export function useAutoTrack(sectionId: string, isRead: boolean, onMarkedRead: () => void) {
+export function useAutoTrack(
+  sectionId: string,
+  isRead: boolean,
+  onMarkedRead: () => void,
+  scrollContainerRef: RefObject<HTMLDivElement | null>,
+) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scrollCleanupRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     if (isRead) return
 
-    const startTimer = async () => {
+    const setup = async () => {
       const { SectionRepository } = await import('@/lib/repositories')
       const { SettingsService } = await import('@/lib/services/settings-service')
       const sectionRepo = new SectionRepository()
       const settingsService = new SettingsService()
-      const threshold = settingsService.getSettings().autoReadThresholdSeconds * 1000
+      const settings = settingsService.getSettings()
 
-      timerRef.current = setTimeout(async () => {
+      const markRead = async () => {
         await sectionRepo.markAsRead(sectionId)
         onMarkedRead()
-      }, threshold)
+      }
+
+      if (settings.trackingMode === 'endofpage') {
+        // End-of-page mode: mark as read when user scrolls to bottom
+        const container = scrollContainerRef.current
+        if (!container) return
+
+        const handleScroll = () => {
+          const { scrollTop, scrollHeight, clientHeight } = container
+          if (scrollTop + clientHeight >= scrollHeight - 50) {
+            markRead()
+            container.removeEventListener('scroll', handleScroll)
+          }
+        }
+
+        container.addEventListener('scroll', handleScroll)
+        // Check immediately in case content fits without scrolling
+        handleScroll()
+        scrollCleanupRef.current = () => container.removeEventListener('scroll', handleScroll)
+      } else {
+        // Timer mode: mark as read after threshold seconds
+        const threshold = settings.autoReadThresholdSeconds * 1000
+        timerRef.current = setTimeout(markRead, threshold)
+      }
     }
 
-    startTimer()
+    setup()
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = null
+      scrollCleanupRef.current?.()
+      scrollCleanupRef.current = null
     }
-  }, [sectionId, isRead, onMarkedRead])
+  }, [sectionId, isRead, onMarkedRead, scrollContainerRef])
 }

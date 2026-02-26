@@ -56,6 +56,8 @@ describe('Database', () => {
       extractedText: null,
       isRead: false,
       readAt: null,
+      lastPageViewed: null,
+      scrollProgress: null,
     }
     await db.sections.add(section)
     const sections = await db.sections.where('chapterId').equals(chapterId).toArray()
