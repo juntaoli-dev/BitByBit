@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useBookDetail } from '@/hooks/use-book-detail'
 import { ProgressDrilldown } from '@/components/dashboard/progress-drilldown'
+import { ProcessButton } from '@/components/dashboard/process-button'
 
 export default function BookDashboardPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -56,6 +57,9 @@ export default function BookDashboardPage({ params }: { params: Promise<{ id: st
             <Link href={`/book/${book.id}/read/${continueSection.id}`} className="mt-2">
               <Button>Continue Reading</Button>
             </Link>
+          )}
+          {book.processingStatus !== 'complete' && (
+            <ProcessButton bookId={book.id} totalChapters={book.chapters.length} onComplete={refresh} />
           )}
         </div>
       </div>
